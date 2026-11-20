@@ -6,9 +6,9 @@ import pytesseract
 from PIL import Image, ImageDraw, ImageFont
 from fastapi.testclient import TestClient
 
-from app.config.settings import get_settings
+from app.settings import get_settings
 from app.main import app
-from app.pdf.extractor import extract_text_from_pdf_bytes
+from app.pdf_service import extract_text_from_pdf_bytes
 
 
 @pytest.mark.parametrize("value", ["eng,spa", "eng+spa", " eng, + spa "])

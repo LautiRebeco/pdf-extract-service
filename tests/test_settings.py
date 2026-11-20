@@ -1,5 +1,5 @@
-from app.config.settings import get_settings
-from app.config.settings import (
+from app.settings import get_settings
+from app.settings import (
     DEFAULT_EXTRACT_WORKERS,
     DEFAULT_MAX_PDF_SIZE_BYTES,
     DEFAULT_MAX_PENDING_EXTRACTIONS,

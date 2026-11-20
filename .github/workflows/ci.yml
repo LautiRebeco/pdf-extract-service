@@ -35,17 +35,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build container and wait for the image health check
-        run: docker compose up --build --detach --wait --wait-timeout 90
-      - name: Verify HTTP probes and OCR languages in the runtime image
+      - name: Build and run the standalone image
         run: |
-          curl -fsS http://localhost:8000/health
-          curl -fsS http://localhost:8000/health/ready
-          docker compose exec -T pdf-extract tesseract --list-langs | grep -x eng
-          docker compose exec -T pdf-extract tesseract --list-langs | grep -x spa
+          docker build -t pdf-extract-service .
+          docker run --detach --init --name pdf-extract-test pdf-extract-service
+      - name: Verify the image health check, readiness and OCR languages
+        run: |
+          for attempt in {1..30}; do
+            status=$(docker inspect -f '{{.State.Health.Status}}' pdf-extract-test)
+            if [ "$status" = healthy ]; then break; fi
+            sleep 2
+          done
+          test "$status" = healthy
+          docker exec pdf-extract-test python -c "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health/ready', timeout=2).close()"
+          docker exec pdf-extract-test tesseract --list-langs | grep -x eng
+          docker exec pdf-extract-test tesseract --list-langs | grep -x spa
       - name: Print container logs
         if: failure()
-        run: docker compose logs
-      - name: Stop container
+        run: docker logs pdf-extract-test
+      - name: Remove test container
         if: always()
-        run: docker compose down
+        run: docker rm -f pdf-extract-test

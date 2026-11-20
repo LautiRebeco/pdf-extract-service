@@ -5,7 +5,7 @@ import httpx
 import pytest
 
 from app.main import app
-from app.schemas.extraction import ExtractionResult
+from app.pdf_service import ExtractionResult
 
 pytestmark = pytest.mark.anyio
 
@@ -19,7 +19,7 @@ def blocked_worker(monkeypatch):
         assert release.wait(8)
         return ExtractionResult(content="texto", page_count=1)
 
-    monkeypatch.setattr("app.services.pdf_extraction_service._extract_text", extract)
+    monkeypatch.setattr("app.main.extract_text_from_pdf_bytes", extract)
     monkeypatch.setenv("APP_EXTRACT_WORKERS", "1")
     monkeypatch.setenv("APP_MAX_PENDING_EXTRACTIONS", "1")
     yield started, release
@@ -59,7 +59,7 @@ async def test_abandoned_request_keeps_running_job_counted(
             assert rejected.headers["Retry-After"] == "1"
         finally:
             release.set()
-        await wait_until(lambda: app.state.extraction_service.get_stats().pending == 0)
+        await wait_until(lambda: app.state.extraction_pool.get_stats().pending == 0)
         assert (await client.get("/health/ready")).status_code == 200
         assert (await client.post("/extract/text", content=pdf_bytes)).status_code == 200
 
@@ -76,7 +76,7 @@ async def test_lifespan_drains_or_returns_at_deadline(
     async with client_for_app() as client:
         active = asyncio.create_task(client.post("/extract/text", content=pdf_bytes))
         await wait_until(started.is_set)
-        service = app.state.extraction_service
+        service = app.state.extraction_pool
         queued = asyncio.create_task(client.post("/extract/text", content=pdf_bytes))
         await wait_until(lambda: service.get_stats().pending == 2)
         closing = asyncio.create_task(lifespan.__aexit__(None, None, None))

@@ -3,7 +3,7 @@ import os
 import uvicorn
 from dotenv import load_dotenv
 
-from app.config.settings import get_settings
+from app.settings import get_settings
 from app.logging_config import configure_logging
 
 

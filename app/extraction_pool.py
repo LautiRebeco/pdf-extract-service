@@ -2,23 +2,38 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, ThreadPoolExecutor
+from dataclasses import dataclass
 from functools import partial
 from multiprocessing import get_context
 
-from app.config.settings import Settings
 from app.logging_config import configure_logging
-from app.pdf.extractor import extract_markdown_from_pdf_bytes as _extract_markdown
-from app.pdf.extractor import extract_text_from_pdf_bytes as _extract_text
-from app.schemas.extraction import ExtractionResult
-from app.services.errors import ExtractionTimeoutError, ServiceOverloadedError
-from app.services.interfaces import PDFPayload, ServiceStats
+from app.pdf_service import ExtractionResult
+from app.settings import Settings
 
 logger = logging.getLogger(__name__)
 
 
-class PDFExtractionServiceImpl:
+class ServiceOverloadedError(Exception):
+    """The extraction service cannot admit another job."""
+
+
+class ExtractionTimeoutError(Exception):
+    """The HTTP wait budget for extraction expired."""
+
+
+@dataclass(frozen=True)
+class ServiceStats:
+    pending: int
+    max_pending: int
+    workers: int
+    queue_utilization: float
+    closing: bool
+    available: bool
+
+
+class ExtractionPool:
     """Admits a bounded number of jobs on the application event loop."""
 
     def __init__(self, settings: Settings):
@@ -43,18 +58,14 @@ class PDFExtractionServiceImpl:
         self._closing = False
         self._failed = False
 
-    async def extract_text(self, payload: PDFPayload, *, ocr_enabled: bool) -> ExtractionResult:
-        return await self._run(_extract_text, payload, ocr_enabled)
-
-    async def extract_markdown(self, payload: PDFPayload, *, ocr_enabled: bool) -> ExtractionResult:
-        return await self._run(_extract_markdown, payload, ocr_enabled)
-
     def _check_available(self) -> None:
         if self._closing or self._failed:
             raise ServiceOverloadedError("Servicio de extracción no disponible.")
 
-    async def _run(
-        self, extract: Callable[..., ExtractionResult], payload: PDFPayload, ocr_enabled: bool
+    async def run(
+        self,
+        extract: Callable[..., ExtractionResult],
+        read_pdf: Callable[[], Awaitable[bytes]],
     ) -> ExtractionResult:
         self._check_available()
         if self._pending >= self._settings.max_pending_extractions:
@@ -64,7 +75,7 @@ class PDFExtractionServiceImpl:
         submitted = False
         timeout = asyncio.timeout(self._settings.extraction_timeout_seconds)
         try:
-            file_bytes = payload if isinstance(payload, bytes) else await payload()
+            file_bytes = await read_pdf()
             self._check_available()
             async with timeout:
                 while len(self._active) >= self._workers:
@@ -75,7 +86,7 @@ class PDFExtractionServiceImpl:
                     partial(
                         extract,
                         file_bytes,
-                        ocr_enabled=ocr_enabled,
+                        ocr_enabled=self._settings.ocr_enabled,
                         ocr_languages=self._settings.ocr_languages,
                     ),
                 )
