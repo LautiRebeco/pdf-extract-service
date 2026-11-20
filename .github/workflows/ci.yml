@@ -1,0 +1,51 @@
+
+name: CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install Tesseract and language data
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-eng tesseract-ocr-spa
+      - name: Install locked Python dependencies
+        run: |
+          python -m pip install uv==0.11.2
+          uv sync --locked
+      - name: Run static analysis
+        run: |
+          uv run --locked mypy app
+          uv run --locked flake8 --jobs=1 app tests --select E9,F63,F7,F82
+      - name: Run tests with coverage
+        run: uv run --locked pytest --cov=app --cov-report=term-missing --cov-fail-under=90
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build container and wait for the image health check
+        run: docker compose up --build --detach --wait --wait-timeout 90
+      - name: Verify HTTP probes and OCR languages in the runtime image
+        run: |
+          curl -fsS http://localhost:8000/health
+          curl -fsS http://localhost:8000/health/ready
+          docker compose exec -T pdf-extract tesseract --list-langs | grep -x eng
+          docker compose exec -T pdf-extract tesseract --list-langs | grep -x spa
+      - name: Print container logs
+        if: failure()
+        run: docker compose logs
+      - name: Stop container
+        if: always()
+        run: docker compose down
