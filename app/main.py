@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -19,7 +18,7 @@ load_dotenv()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, settings.log_format)
     service = PDFExtractionServiceImpl(settings)
     app.state.settings = settings
     app.state.extraction_service = service

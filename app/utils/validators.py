@@ -1,46 +1,58 @@
 from __future__ import annotations
 
-import logging
-from fastapi import HTTPException, Request
-from starlette.datastructures import UploadFile as FormFile
+from collections.abc import AsyncGenerator, AsyncIterator
 
-from app.config.settings import Settings
+from starlette.datastructures import FormData
+from starlette.formparsers import MultiPartException, MultiPartParser
 
-logger = logging.getLogger(__name__)
-
-EMPTY_FILE_ERROR_DETAIL = "El archivo está vacio."
-MAX_FILE_SIZE_ERROR_TEMPLATE = "El archivo supera el tamaño máximo permitido de {max_size} bytes."
-MISSING_FILE_FIELD_ERROR_DETAIL = "Falta el campo 'file' con el PDF."
-SERVICE_BUSY_ERROR_DETAIL = "Servicio saturado, reintentá en unos segundos."
+MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+READ_CHUNK_BYTES = 64 * 1024
 
 
-def ensure_valid_size(file_bytes: bytes, filename: str, settings: Settings) -> None:
-    """Valida que el archivo no esté vacío y no exceda el tamaño máximo."""
-    if not file_bytes:
-        logger.warning("Rejected PDF: archivo vacío. filename=%s", filename)
-        raise HTTPException(status_code=400, detail=EMPTY_FILE_ERROR_DETAIL)
-
-    if len(file_bytes) > settings.max_pdf_size_bytes:
-        logger.warning(
-            "Rejected PDF: archivo demasiado grande. filename=%s size_bytes=%d max_size=%d",
-            filename,
-            len(file_bytes),
-            settings.max_pdf_size_bytes,
-        )
-        raise HTTPException(
-            status_code=413,
-            detail=MAX_FILE_SIZE_ERROR_TEMPLATE.format(max_size=settings.max_pdf_size_bytes),
-        )
+class UploadTooLarge(MultiPartException):
+    """A file or its multipart envelope exceeded the configured byte budget."""
 
 
-async def validate_pdf_payload(request: Request) -> tuple[bytes, str]:
-    """Extrae y valida el payload PDF de la request (multipart o raw)."""
-    if not request.headers.get("content-type", "").startswith("multipart/form-data"):
-        return await request.body(), "raw"
+async def bounded_chunks(chunks: AsyncIterator[bytes], limit: int) -> AsyncGenerator[bytes, None]:
+    total = 0
+    async for chunk in chunks:
+        total += len(chunk)
+        if total > limit:
+            raise UploadTooLarge("Upload exceeds its byte budget")
+        for offset in range(0, len(chunk), READ_CHUNK_BYTES):
+            yield chunk[offset : offset + READ_CHUNK_BYTES]
 
-    async with request.form() as form:
-        upload = form.get("file")
-        if not isinstance(upload, FormFile):
-            logger.warning("Rejected extract request: multipart sin campo 'file'")
-            raise HTTPException(status_code=400, detail=MISSING_FILE_FIELD_ERROR_DETAIL)
-        return await upload.read(), upload.filename or "multipart"
+
+class BoundedMultipartParser(MultiPartParser):
+    """Keep Starlette's spooling and enforce the file limit while parsing."""
+
+    max_file_bytes: int
+    _file_bytes = 0
+    _complete = False
+
+    def on_part_begin(self) -> None:
+        super().on_part_begin()
+        self._file_bytes = 0
+
+    def on_part_data(self, data: bytes, start: int, end: int) -> None:
+        if self._current_part.file is not None:
+            self._file_bytes += end - start
+            if self._file_bytes > self.max_file_bytes:
+                raise UploadTooLarge("Multipart file exceeds its byte budget")
+        super().on_part_data(data, start, end)
+
+    def on_end(self) -> None:
+        self._complete = True
+
+    async def parse(self) -> FormData:
+        try:
+            form = await super().parse()
+            if not self._complete:
+                raise MultiPartException("Formulario multipart incompleto.")
+            return form
+        except BaseException:
+            # Starlette closes spools on parser errors, but not on cancellation
+            # or disconnect. File.close() is safe to call again.
+            for file in self._files_to_close_on_error:
+                file.close()
+            raise

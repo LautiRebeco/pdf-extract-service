@@ -1,4 +1,3 @@
-
 import asyncio
 from threading import Event
 
@@ -9,11 +8,6 @@ from app.main import app
 from app.schemas.extraction import ExtractionResult
 
 pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
 
 
 @pytest.fixture
@@ -102,3 +96,29 @@ async def test_lifespan_drains_or_returns_at_deadline(
             release.set()
             await closing
             await asyncio.gather(active, queued, return_exceptions=True)
+
+
+async def test_uploads_share_admission_before_the_body_is_read(monkeypatch, pdf_bytes):
+    monkeypatch.setenv("APP_MAX_PENDING_EXTRACTIONS", "1")
+    reading, release = asyncio.Event(), asyncio.Event()
+
+    async def waiting_upload():
+        reading.set()
+        await release.wait()
+        yield pdf_bytes
+
+    async def rejected_upload():
+        pytest.fail("The saturated endpoint started reading another PDF")
+        yield b""
+
+    async with app.router.lifespan_context(app), client_for_app() as client:
+        first = asyncio.create_task(client.post("/extract/text", content=waiting_upload()))
+        try:
+            await asyncio.wait_for(reading.wait(), 3)
+            rejected = await client.post("/extract/text", content=rejected_upload())
+            assert rejected.status_code == 503
+            assert rejected.headers["Retry-After"] == "1"
+            assert (await client.get("/health/ready")).json()["pending_extractions"] == 1
+        finally:
+            release.set()
+        assert (await first).status_code == 200

@@ -4,7 +4,7 @@ import logging
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 
-from app.pdf.errors import InvalidPDFError
+from app.pdf.errors import InvalidPDFError, OCRError
 from app.services.errors import ExtractionTimeoutError, ServiceOverloadedError
 
 logger = logging.getLogger(__name__)
@@ -15,11 +15,17 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(ServiceOverloadedError)
     async def overloaded_handler(request: Request, exc: ServiceOverloadedError):
-        return JSONResponse(status_code=503, content={"detail": str(exc)}, headers={"Retry-After": "1"})
+        return JSONResponse(
+            status_code=503, content={"detail": str(exc)}, headers={"Retry-After": "1"}
+        )
 
     @app.exception_handler(ExtractionTimeoutError)
     async def timeout_handler(request: Request, exc: ExtractionTimeoutError):
         return JSONResponse(status_code=504, content={"detail": str(exc)})
+
+    @app.exception_handler(OCRError)
+    async def ocr_error_handler(request: Request, exc: OCRError):
+        return JSONResponse(status_code=500, content={"detail": "No se pudo completar el OCR."})
 
     @app.exception_handler(InvalidPDFError)
     async def invalid_pdf_handler(request: Request, exc: InvalidPDFError):

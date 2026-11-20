@@ -59,7 +59,7 @@ def test_extract_text_from_image_bytes_uses_ocr_successfully(mocker):
 
 
 def test_extract_text_from_pdf_bytes_skips_ocr_when_disabled(monkeypatch, pdf_with_image):
-    monkeypatch.setattr("app.pdf.extract_text_from_image_bytes", _fail_ocr)
+    monkeypatch.setattr("app.pdf.extractor.extract_text_from_image_bytes", _fail_ocr)
 
     result = extract_text_from_pdf_bytes(pdf_with_image, ocr_enabled=False)
 
@@ -113,7 +113,7 @@ def test_extract_markdown_marks_large_text_as_headings(build_pdf) -> None:
 
 
 def test_extract_markdown_skips_ocr_when_disabled(monkeypatch, pdf_with_image) -> None:
-    monkeypatch.setattr("app.pdf.extract_text_from_image_bytes", _fail_ocr)
+    monkeypatch.setattr("app.pdf.extractor.extract_text_from_image_bytes", _fail_ocr)
 
     result = extract_markdown_from_pdf_bytes(pdf_with_image, ocr_enabled=False)
 

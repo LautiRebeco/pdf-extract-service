@@ -1,4 +1,3 @@
-
 class ServiceOverloadedError(Exception):
     """The extraction service cannot admit another job."""
 

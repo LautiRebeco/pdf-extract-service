@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import asyncio
@@ -9,11 +8,12 @@ from functools import partial
 from multiprocessing import get_context
 
 from app.config.settings import Settings
+from app.logging_config import configure_logging
 from app.pdf.extractor import extract_markdown_from_pdf_bytes as _extract_markdown
 from app.pdf.extractor import extract_text_from_pdf_bytes as _extract_text
 from app.schemas.extraction import ExtractionResult
 from app.services.errors import ExtractionTimeoutError, ServiceOverloadedError
-from app.services.interfaces import ServiceStats
+from app.services.interfaces import PDFPayload, ServiceStats
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,12 @@ class PDFExtractionServiceImpl:
         self._pool = (
             ThreadPoolExecutor(max_workers=1)
             if self._workers == 1
-            else ProcessPoolExecutor(max_workers=self._workers, mp_context=get_context("spawn"))
+            else ProcessPoolExecutor(
+                max_workers=self._workers,
+                mp_context=get_context("spawn"),
+                initializer=configure_logging,
+                initargs=(settings.log_level, settings.log_format),
+            )
         )
         self._worker_available = asyncio.Event()
         self._worker_available.set()
@@ -38,18 +43,18 @@ class PDFExtractionServiceImpl:
         self._closing = False
         self._failed = False
 
-    async def extract_text(self, file_bytes: bytes, *, ocr_enabled: bool) -> ExtractionResult:
-        return await self._run(_extract_text, file_bytes, ocr_enabled)
+    async def extract_text(self, payload: PDFPayload, *, ocr_enabled: bool) -> ExtractionResult:
+        return await self._run(_extract_text, payload, ocr_enabled)
 
-    async def extract_markdown(self, file_bytes: bytes, *, ocr_enabled: bool) -> ExtractionResult:
-        return await self._run(_extract_markdown, file_bytes, ocr_enabled)
+    async def extract_markdown(self, payload: PDFPayload, *, ocr_enabled: bool) -> ExtractionResult:
+        return await self._run(_extract_markdown, payload, ocr_enabled)
 
     def _check_available(self) -> None:
         if self._closing or self._failed:
             raise ServiceOverloadedError("Servicio de extracción no disponible.")
 
     async def _run(
-        self, extract: Callable[..., ExtractionResult], file_bytes: bytes, ocr_enabled: bool
+        self, extract: Callable[..., ExtractionResult], payload: PDFPayload, ocr_enabled: bool
     ) -> ExtractionResult:
         self._check_available()
         if self._pending >= self._settings.max_pending_extractions:
@@ -59,16 +64,18 @@ class PDFExtractionServiceImpl:
         submitted = False
         timeout = asyncio.timeout(self._settings.extraction_timeout_seconds)
         try:
+            file_bytes = payload if isinstance(payload, bytes) else await payload()
+            self._check_available()
             async with timeout:
-                await self._worker_available.wait()
-                self._check_available()
                 while len(self._active) >= self._workers:
                     await self._worker_available.wait()
                     self._check_available()
                 future = asyncio.get_running_loop().run_in_executor(
                     self._pool,
                     partial(
-                        extract, file_bytes, ocr_enabled=ocr_enabled,
+                        extract,
+                        file_bytes,
+                        ocr_enabled=ocr_enabled,
                         ocr_languages=self._settings.ocr_languages,
                     ),
                 )
@@ -81,7 +88,9 @@ class PDFExtractionServiceImpl:
         except TimeoutError as exc:
             if not timeout.expired():
                 raise
-            logger.warning("Extraction wait exceeded %s seconds", self._settings.extraction_timeout_seconds)
+            logger.warning(
+                "Extraction wait exceeded %s seconds", self._settings.extraction_timeout_seconds
+            )
             raise ExtractionTimeoutError(
                 f"Tiempo de extracción excedido ({self._settings.extraction_timeout_seconds}s)"
             ) from exc
@@ -120,9 +129,11 @@ class PDFExtractionServiceImpl:
                     self._active, timeout=self._settings.shutdown_timeout_seconds
                 )
                 if remaining:
-                    logger.warning("Shutdown wait expired with %d active extractions", len(remaining))
+                    logger.warning(
+                        "Shutdown wait expired with %d active extractions", len(remaining)
+                    )
         finally:
             if self._active and isinstance(self._pool, ProcessPoolExecutor):
-                self._pool.terminate_workers()
+                self._pool.terminate_workers()  # type: ignore[attr-defined]  # Python 3.14
             else:
                 self._pool.shutdown(wait=False, cancel_futures=True)

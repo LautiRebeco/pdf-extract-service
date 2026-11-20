@@ -1,10 +1,12 @@
-
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TypeAlias
 
 from app.schemas.extraction import ExtractionResult
+
+PDFPayload: TypeAlias = bytes | Callable[[], Awaitable[bytes]]
 
 
 @dataclass(frozen=True)
@@ -18,8 +20,10 @@ class ServiceStats:
 
 
 class PDFExtractionService(Protocol):
-    async def extract_text(self, file_bytes: bytes, *, ocr_enabled: bool) -> ExtractionResult: ...
+    async def extract_text(self, payload: PDFPayload, *, ocr_enabled: bool) -> ExtractionResult: ...
 
-    async def extract_markdown(self, file_bytes: bytes, *, ocr_enabled: bool) -> ExtractionResult: ...
+    async def extract_markdown(
+        self, payload: PDFPayload, *, ocr_enabled: bool
+    ) -> ExtractionResult: ...
 
     def get_stats(self) -> ServiceStats: ...
