@@ -27,3 +27,25 @@ def test_configure_logging_sets_root_level(monkeypatch) -> None:
     configure_logging("WARNING")
 
     assert root.level == logging.WARNING
+
+
+def test_json_logging_emits_one_record_to_stdout(monkeypatch, capsys):
+    import json
+
+    from app.logging_config import configure_logging
+
+    root = logging.getLogger()
+    monkeypatch.setattr(root, "handlers", root.handlers.copy())
+    monkeypatch.setattr(root, "level", root.level)
+    for handler in root.handlers[:]:
+        if handler.name == "pdf-extract-stdout":
+            root.removeHandler(handler)
+
+    configure_logging("INFO", "json")
+    configure_logging("INFO", "json")
+    logging.getLogger("uvicorn.access").info("Solicitud %s", "PDF")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["message"] == "Solicitud PDF"
+    assert payload["logger"] == "uvicorn.access"
+    assert payload["level"] == "INFO"
+    assert payload["timestamp"].endswith("+00:00")

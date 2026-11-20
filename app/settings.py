@@ -20,7 +20,9 @@ class Settings:
     extract_workers: int = DEFAULT_EXTRACT_WORKERS
     max_pending_extractions: int = DEFAULT_MAX_PENDING_EXTRACTIONS
     log_level: str = DEFAULT_LOG_LEVEL
+    log_format: str = "text"
     extraction_timeout_seconds: int = DEFAULT_EXTRACTION_TIMEOUT_SECONDS
+    shutdown_timeout_seconds: int = 30
     ocr_languages: str = DEFAULT_OCR_LANGUAGES
 
 
@@ -57,8 +59,19 @@ def _log_level_env(name: str, default: str) -> str:
     return raw
 
 
+def _ocr_languages_env() -> str:
+    raw = os.getenv("APP_OCR_LANGUAGES", DEFAULT_OCR_LANGUAGES)
+    codes = (code.strip() for code in raw.replace(",", "+").split("+"))
+    return "+".join(code for code in codes if code) or DEFAULT_OCR_LANGUAGES
+
+
 def get_settings() -> Settings:
     logger.debug("Loading application settings from environment")
+
+    log_format = os.getenv("APP_LOG_FORMAT", "text").strip().lower()
+    if log_format not in {"text", "json"}:
+        logger.warning("Invalid APP_LOG_FORMAT %r. Using text", log_format)
+        log_format = "text"
 
     return Settings(
         app_name=os.getenv("APP_NAME", "PDF Extractext Extract"),
@@ -68,9 +81,11 @@ def get_settings() -> Settings:
         max_pending_extractions=_positive_int_env(
             "APP_MAX_PENDING_EXTRACTIONS", DEFAULT_MAX_PENDING_EXTRACTIONS
         ),
+        log_format=log_format,
         log_level=_log_level_env("APP_LOG_LEVEL", DEFAULT_LOG_LEVEL),
         extraction_timeout_seconds=_positive_int_env(
             "APP_EXTRACTION_TIMEOUT_SECONDS", DEFAULT_EXTRACTION_TIMEOUT_SECONDS
         ),
-        ocr_languages=os.getenv("APP_OCR_LANGUAGES", DEFAULT_OCR_LANGUAGES),
+        shutdown_timeout_seconds=_positive_int_env("APP_SHUTDOWN_TIMEOUT_SECONDS", 30),
+        ocr_languages=_ocr_languages_env(),
     )

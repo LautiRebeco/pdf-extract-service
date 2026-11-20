@@ -1,31 +1,47 @@
-def test_service_bulkhead_rejects_when_queue_full(pdf_bytes) -> None:
-    """Verifica que el bulkhead rechaza cuando la cola está llena (test unitario)."""
-    import pytest
-    from concurrent.futures import ThreadPoolExecutor
-    """Verifica que el bulkhead rechaza cuando la cola está llena (test unitario)."""
-    from app.services.pdf_extraction_service import PDFExtractionServiceImpl
-    from app.config.settings import Settings
-    from fastapi import HTTPException
-    
-    # Crear servicio real con límite muy bajo
-    pool = ThreadPoolExecutor(max_workers=1)
-    limited_service = PDFExtractionServiceImpl(
-        Settings(extract_workers=1, max_pending_extractions=1, extraction_timeout_seconds=30)
-    )
-    limited_service._pool = pool
-    
-    try:
-        # Simular que ya hay una extracción en curso
-        limited_service._pending = 1
-        
-        import asyncio
-        from fastapi import HTTPException
-        
-        # Debería fallar inmediatamente porque pending >= max_pending
-        with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(limited_service.extract_markdown(b"%PDF-1.4\n%%EOF", ocr_enabled=False))
-        
-        assert exc_info.value.status_code == 503
-        assert exc_info.value.headers["Retry-After"] == "1"
-    finally:
-        pool.shutdown(wait=True)
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.pdf_service import ExtractionResult
+
+
+def test_requests_share_capacity(monkeypatch, pdf_bytes):
+    monkeypatch.setenv("APP_MAX_PENDING_EXTRACTIONS", "2")
+    monkeypatch.setenv("APP_EXTRACT_WORKERS", "1")
+    started, release = Event(), Event()
+    calls = []
+
+    def blocked_extract(*args, **kwargs):
+        calls.append(1)
+        started.set()
+        assert release.wait(8)
+        return ExtractionResult(content="texto", page_count=1)
+
+    monkeypatch.setattr("app.main.extract_text_from_pdf_bytes", blocked_extract)
+    with TestClient(app) as client, ThreadPoolExecutor(2) as callers:
+        first = callers.submit(client.post, "/extract/text", content=pdf_bytes)
+        try:
+            assert started.wait(4)
+            second = callers.submit(client.post, "/extract/text", content=pdf_bytes)
+            import time
+
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline:
+                ready = client.get("/health/ready")
+                if ready.json()["pending_extractions"] == 2:
+                    break
+                time.sleep(0.01)
+            assert ready.status_code == 503
+            assert ready.json()["pending_extractions"] == 2
+            assert len(calls) == 1
+            assert client.get("/health/live").status_code == 200
+            rejected = client.post("/extract", content=pdf_bytes)
+            assert rejected.status_code == 503
+            assert rejected.headers["Retry-After"] == "1"
+        finally:
+            release.set()
+        assert first.result().json() == {"content": "texto", "page_count": 1}
+        assert second.result().status_code == 200
+        assert client.get("/health/ready").json()["pending_extractions"] == 0

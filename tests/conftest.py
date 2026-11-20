@@ -30,3 +30,8 @@ def pdf_with_image() -> bytes:
     pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 10, 10), False)
     page.insert_image(fitz.Rect(20, 50, 120, 150), stream=pixmap.tobytes("png"))
     return doc.write()
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"

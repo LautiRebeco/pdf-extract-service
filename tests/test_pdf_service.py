@@ -1,7 +1,7 @@
 import fitz
 import pytest
 
-from app.pdf import (
+from app.pdf_service import (
     extract_markdown_from_pdf_bytes,
     extract_text_from_pdf_bytes,
     INVALID_PDF_CONTENT_ERROR,
@@ -59,7 +59,7 @@ def test_extract_text_from_image_bytes_uses_ocr_successfully(mocker):
 
 
 def test_extract_text_from_pdf_bytes_skips_ocr_when_disabled(monkeypatch, pdf_with_image):
-    monkeypatch.setattr("app.pdf.extract_text_from_image_bytes", _fail_ocr)
+    monkeypatch.setattr("app.pdf_service.extract_text_from_image_bytes", _fail_ocr)
 
     result = extract_text_from_pdf_bytes(pdf_with_image, ocr_enabled=False)
 
@@ -67,7 +67,7 @@ def test_extract_text_from_pdf_bytes_skips_ocr_when_disabled(monkeypatch, pdf_wi
 
 
 def test_extract_text_from_pdf_bytes_runs_ocr_when_enabled(monkeypatch, pdf_with_image):
-    monkeypatch.setattr("app.pdf.extractor.extract_text_from_image_bytes", lambda _, languages="eng+spa": "texto ocr")
+    monkeypatch.setattr("app.pdf_service.extract_text_from_image_bytes", lambda _, languages="eng+spa": "texto ocr")
 
     result = extract_text_from_pdf_bytes(pdf_with_image, ocr_enabled=True)
 
@@ -113,7 +113,7 @@ def test_extract_markdown_marks_large_text_as_headings(build_pdf) -> None:
 
 
 def test_extract_markdown_skips_ocr_when_disabled(monkeypatch, pdf_with_image) -> None:
-    monkeypatch.setattr("app.pdf.extract_text_from_image_bytes", _fail_ocr)
+    monkeypatch.setattr("app.pdf_service.extract_text_from_image_bytes", _fail_ocr)
 
     result = extract_markdown_from_pdf_bytes(pdf_with_image, ocr_enabled=False)
 
@@ -121,8 +121,19 @@ def test_extract_markdown_skips_ocr_when_disabled(monkeypatch, pdf_with_image) -
 
 
 def test_extract_markdown_runs_ocr_when_enabled(monkeypatch, pdf_with_image) -> None:
-    monkeypatch.setattr("app.pdf.extractor.extract_text_from_image_bytes", lambda _, languages="eng+spa": "texto ocr")
+    monkeypatch.setattr("app.pdf_service.extract_text_from_image_bytes", lambda _, languages="eng+spa": "texto ocr")
 
     result = extract_markdown_from_pdf_bytes(pdf_with_image, ocr_enabled=True)
 
     assert result.content == "Texto normal\n\ntexto ocr"
+
+
+def test_extract_markdown_preserves_line_breaks_in_body():
+    with fitz.open() as doc:
+        page = doc.new_page()
+        page.insert_text((20, 40), "Primera linea\nSegunda linea", fontsize=11)
+        pdf = doc.write()
+
+    result = extract_markdown_from_pdf_bytes(pdf, ocr_enabled=False)
+
+    assert result.content == "Primera linea\nSegunda linea"
