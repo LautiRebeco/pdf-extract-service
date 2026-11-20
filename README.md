@@ -110,9 +110,9 @@ Si se necesitara detener estrictamente un único trabajo al vencer el HTTP, ser�
 ## Pruebas y evidencia
 
 ```sh
-uv run --locked pytest --cov=app --cov-report=term-missing --cov-fail-under=90
-uv run --locked mypy app
-uv run --locked flake8 --jobs=1 app tests --select E9,F63,F7,F82
+uv run --locked python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=90
+uv run --locked python -m mypy app
+uv run --locked python -m flake8 --jobs=1 app tests --select E9,F63,F7,F82
 ```
 
 La línea base pasó 54 pruebas antes de la refactorización. Las nuevas regresiones comprobaron que la saturación era invisible para readiness, que los trabajos en cola seguían esperando durante el cierre y que el OCR fallido sin texto se devolvía como éxito. Las pruebas actuales incluyen concurrencia HTTP, 503 y `Retry-After`, timeout, cancelación, cierre, PDFs corruptos, cargas binarias y multipart por encima del límite, encabezados Markdown, logs JSON y OCR real. La integración OCR se salta si falta Tesseract o alguno de los idiomas solicitados. El workflow de GitHub Actions ejecuta pytest con cobertura mínima del 90 %, análisis estático, build de Docker y verificación de salud.
@@ -120,6 +120,7 @@ La línea base pasó 54 pruebas antes de la refactorización. Las nuevas regresi
 Verificación local en Windows con Python 3.14.3
 
 - 79 pruebas pasaron, 1 quedó omitida y la cobertura fue 95,88 %. La omisión corresponde al OCR bilingüe porque la instalación local solo tenía `eng`. Starlette emitió una advertencia sobre el uso de `httpx` en `TestClient`.
+- mypy 1.19.1 revisó 24 archivos de aplicación y Flake8 pasó los controles de sintaxis y errores configurados en CI.
 - En Docker, la imagen quedó `healthy` y las tres rutas de salud devolvieron 200 en reposo. Una prueba HTTP con dos workers extrajo `HELLO WORLD` de un PDF de imagen usando `eng+spa`, con logs JSON y un usuario sin privilegios.
 
 ## Para la exposición universitaria

@@ -134,6 +134,6 @@ class PDFExtractionServiceImpl:
                     )
         finally:
             if self._active and isinstance(self._pool, ProcessPoolExecutor):
-                self._pool.terminate_workers()  # type: ignore[attr-defined]  # Python 3.14
+                self._pool.terminate_workers()
             else:
                 self._pool.shutdown(wait=False, cancel_futures=True)
