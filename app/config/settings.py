@@ -21,6 +21,7 @@ class Settings:
     max_pending_extractions: int = DEFAULT_MAX_PENDING_EXTRACTIONS
     log_level: str = DEFAULT_LOG_LEVEL
     extraction_timeout_seconds: int = DEFAULT_EXTRACTION_TIMEOUT_SECONDS
+    shutdown_timeout_seconds: int = 30
     ocr_languages: str = DEFAULT_OCR_LANGUAGES
 
 
@@ -72,5 +73,6 @@ def get_settings() -> Settings:
         extraction_timeout_seconds=_positive_int_env(
             "APP_EXTRACTION_TIMEOUT_SECONDS", DEFAULT_EXTRACTION_TIMEOUT_SECONDS
         ),
+        shutdown_timeout_seconds=_positive_int_env("APP_SHUTDOWN_TIMEOUT_SECONDS", 30),
         ocr_languages=os.getenv("APP_OCR_LANGUAGES", DEFAULT_OCR_LANGUAGES),
     )

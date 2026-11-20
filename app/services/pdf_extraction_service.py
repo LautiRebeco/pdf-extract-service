@@ -1,83 +1,128 @@
+
 from __future__ import annotations
 
 import asyncio
-import functools
 import logging
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from collections.abc import Callable
+from concurrent.futures import BrokenExecutor, ProcessPoolExecutor, ThreadPoolExecutor
+from functools import partial
+from multiprocessing import get_context
 
 from app.config.settings import Settings
-from app.services.interfaces import PDFExtractionService, ServiceStats
-from app.pdf.extractor import (
-    extract_text_from_pdf_bytes as _extract_text,
-    extract_markdown_from_pdf_bytes as _extract_markdown,
-)
-from app.pdf.errors import InvalidPDFError
+from app.pdf.extractor import extract_markdown_from_pdf_bytes as _extract_markdown
+from app.pdf.extractor import extract_text_from_pdf_bytes as _extract_text
+from app.schemas.extraction import ExtractionResult
+from app.services.errors import ExtractionTimeoutError, ServiceOverloadedError
+from app.services.interfaces import ServiceStats
 
 logger = logging.getLogger(__name__)
 
 
-class PDFExtractionServiceImpl(PDFExtractionService):
-    """Implementación concreta con bulkhead (ThreadPoolExecutor + cola acotada) y timeout."""
+class PDFExtractionServiceImpl:
+    """Admits a bounded number of jobs on the application event loop."""
 
     def __init__(self, settings: Settings):
         self._settings = settings
-        self._pool = ThreadPoolExecutor(max_workers=settings.extract_workers)
-        self._pending = 0
-        self._max_pending = settings.max_pending_extractions
-        self._timeout = settings.extraction_timeout_seconds
-        self._ocr_languages = settings.ocr_languages
-        logger.info(
-            "PDFExtractionService initialized: workers=%d, max_pending=%d, timeout=%ds, ocr_languages=%s",
-            settings.extract_workers,
-            settings.max_pending_extractions,
-            settings.extraction_timeout_seconds,
-            settings.ocr_languages,
+        self._workers = min(settings.extract_workers, settings.max_pending_extractions)
+        # PyMuPDF supports parallel extraction across processes. Keep the
+        # single-worker case in a dedicated thread to avoid IPC overhead.
+        self._pool = (
+            ThreadPoolExecutor(max_workers=1)
+            if self._workers == 1
+            else ProcessPoolExecutor(max_workers=self._workers, mp_context=get_context("spawn"))
         )
+        self._worker_available = asyncio.Event()
+        self._worker_available.set()
+        self._active: set[asyncio.Future[ExtractionResult]] = set()
+        self._pending = 0
+        self._closing = False
+        self._failed = False
 
     async def extract_text(self, file_bytes: bytes, *, ocr_enabled: bool) -> ExtractionResult:
-        return await self._run_in_pool(_extract_text, file_bytes, ocr_enabled=ocr_enabled)
+        return await self._run(_extract_text, file_bytes, ocr_enabled)
 
     async def extract_markdown(self, file_bytes: bytes, *, ocr_enabled: bool) -> ExtractionResult:
-        return await self._run_in_pool(_extract_markdown, file_bytes, ocr_enabled=ocr_enabled)
+        return await self._run(_extract_markdown, file_bytes, ocr_enabled)
 
-    async def _run_in_pool(self, func, *args, **kwargs) -> ExtractionResult:
-        if self._pending >= self._max_pending:
-            from fastapi import HTTPException
-            raise HTTPException(
-                status_code=503,
-                detail="Servicio saturado, reintentá en unos segundos.",
-                headers={"Retry-After": "1"},
-            )
+    def _check_available(self) -> None:
+        if self._closing or self._failed:
+            raise ServiceOverloadedError("Servicio de extracción no disponible.")
+
+    async def _run(
+        self, extract: Callable[..., ExtractionResult], file_bytes: bytes, ocr_enabled: bool
+    ) -> ExtractionResult:
+        self._check_available()
+        if self._pending >= self._settings.max_pending_extractions:
+            raise ServiceOverloadedError("Servicio saturado, reintentá en unos segundos.")
 
         self._pending += 1
+        submitted = False
+        timeout = asyncio.timeout(self._settings.extraction_timeout_seconds)
         try:
-            loop = asyncio.get_event_loop()
-            # Pasar ocr_languages si la función lo acepta
-            if "ocr_languages" not in kwargs:
-                kwargs["ocr_languages"] = self._ocr_languages
-            # run_in_executor solo acepta args posicionales, usar partial para kwargs
-            wrapped = functools.partial(func, *args, **kwargs)
-            future = loop.run_in_executor(self._pool, wrapped)
-            return await asyncio.wait_for(future, timeout=self._timeout)
-        except asyncio.TimeoutError:
-            logger.error("Extraction timeout after %ds", self._timeout)
-            raise InvalidPDFError(f"Tiempo de extracción excedido ({self._timeout}s)")
-        except Exception as e:
-            logger.exception("Extraction failed: %s", e)
-            raise
+            async with timeout:
+                await self._worker_available.wait()
+                self._check_available()
+                while len(self._active) >= self._workers:
+                    await self._worker_available.wait()
+                    self._check_available()
+                future = asyncio.get_running_loop().run_in_executor(
+                    self._pool,
+                    partial(
+                        extract, file_bytes, ocr_enabled=ocr_enabled,
+                        ocr_languages=self._settings.ocr_languages,
+                    ),
+                )
+                self._active.add(future)
+                if len(self._active) == self._workers:
+                    self._worker_available.clear()
+                future.add_done_callback(self._finish)
+                submitted = True
+                return await asyncio.shield(future)
+        except TimeoutError as exc:
+            if not timeout.expired():
+                raise
+            logger.warning("Extraction wait exceeded %s seconds", self._settings.extraction_timeout_seconds)
+            raise ExtractionTimeoutError(
+                f"Tiempo de extracción excedido ({self._settings.extraction_timeout_seconds}s)"
+            ) from exc
+        except BrokenExecutor as exc:
+            self._failed = True
+            raise ServiceOverloadedError("Servicio de extracción no disponible.") from exc
         finally:
-            self._pending -= 1
+            if not submitted:
+                self._pending -= 1
+
+    def _finish(self, future: asyncio.Future[ExtractionResult]) -> None:
+        self._active.discard(future)
+        self._pending -= 1
+        self._worker_available.set()
+        # Retrieve failures even when the HTTP caller has already left.
+        if not future.cancelled() and isinstance(future.exception(), BrokenExecutor):
+            self._failed = True
 
     def get_stats(self) -> ServiceStats:
+        maximum = self._settings.max_pending_extractions
         return ServiceStats(
             pending=self._pending,
-            max_pending=self._max_pending,
-            workers=self._settings.extract_workers,
-            queue_utilization=(self._pending / self._max_pending) * 100 if self._max_pending > 0 else 0,
+            max_pending=maximum,
+            workers=self._workers,
+            queue_utilization=100 * self._pending / maximum,
+            closing=self._closing,
+            available=not self._closing and not self._failed and self._pending < maximum,
         )
 
-    def shutdown(self) -> None:
-        logger.info("Shutting down extraction pool...")
-        self._pool.shutdown(wait=True)
-        logger.info("Extraction pool stopped")
+    async def shutdown(self) -> None:
+        self._closing = True
+        self._worker_available.set()
+        try:
+            if self._active:
+                _, remaining = await asyncio.wait(
+                    self._active, timeout=self._settings.shutdown_timeout_seconds
+                )
+                if remaining:
+                    logger.warning("Shutdown wait expired with %d active extractions", len(remaining))
+        finally:
+            if self._active and isinstance(self._pool, ProcessPoolExecutor):
+                self._pool.terminate_workers()
+            else:
+                self._pool.shutdown(wait=False, cancel_futures=True)

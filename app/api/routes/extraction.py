@@ -1,72 +1,65 @@
+
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from typing import Annotated
 
-from app.config.settings import Settings, get_settings
+from fastapi import APIRouter, Depends, Request, Response
+
+from app.config.settings import Settings
+from app.schemas.extraction import ExtractionResult
 from app.services.interfaces import PDFExtractionService
-from app.services.pdf_extraction_service import PDFExtractionServiceImpl
 from app.utils.validators import ensure_valid_size, validate_pdf_payload
 
 router = APIRouter()
 
 
-def get_extraction_service_instance() -> PDFExtractionService:
-    """Factory para el servicio de extracción (para Depends)."""
-    settings = get_settings()
-    return PDFExtractionServiceImpl(settings)
+async def get_extraction_service_instance(request: Request) -> PDFExtractionService:
+    service: PDFExtractionService = request.app.state.extraction_service
+    return service
+
+
+Service = Annotated[PDFExtractionService, Depends(get_extraction_service_instance)]
 
 
 @router.get("/health")
+@router.get("/health/live")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.get("/health/live")
-def liveness() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@router.get("/health/ready")
-def readiness(
-    service: PDFExtractionService = Depends(get_extraction_service_instance),
-) -> dict[str, str | int | float]:
+@router.get("/health/ready", responses={503: {"description": "Extraction unavailable"}})
+async def readiness(service: Service, response: Response) -> dict[str, str | int | float | bool]:
     stats = service.get_stats()
+    status = "ready"
+    if not stats.available:
+        response.status_code = 503
+        status = "closing" if stats.closing else "busy" if stats.pending >= stats.max_pending else "unavailable"
+
     return {
-        "status": "ready" if stats.queue_utilization < 100 else "busy",
+        "status": status,
         "pending_extractions": stats.pending,
         "max_pending_extractions": stats.max_pending,
         "extraction_workers": stats.workers,
         "queue_utilization_percent": round(stats.queue_utilization, 2),
+        "closing": stats.closing,
     }
 
 
 async def _run_extraction(
-    request: Request,
-    extractor_method: str,
-    service: PDFExtractionService,
-    settings: Settings,
-) -> dict[str, str | int]:
+    request: Request, service: PDFExtractionService, *, markdown: bool
+) -> ExtractionResult:
+    settings: Settings = request.app.state.settings
     file_bytes, filename = await validate_pdf_payload(request)
     ensure_valid_size(file_bytes, filename, settings)
-
-    method = getattr(service, extractor_method)
-    result = await method(file_bytes, ocr_enabled=settings.ocr_enabled)
-    return {"content": result.content, "page_count": result.page_count}
+    extract = service.extract_markdown if markdown else service.extract_text
+    return await extract(file_bytes, ocr_enabled=settings.ocr_enabled)
 
 
 @router.post("/extract")
-async def extract(
-    request: Request,
-    service: PDFExtractionService = Depends(get_extraction_service_instance),
-    settings: Settings = Depends(get_settings),
-) -> dict[str, str | int]:
-    return await _run_extraction(request, "extract_markdown", service, settings)
+async def extract(request: Request, service: Service) -> ExtractionResult:
+    return await _run_extraction(request, service, markdown=True)
 
 
 @router.post("/extract/text")
-async def extract_text(
-    request: Request,
-    service: PDFExtractionService = Depends(get_extraction_service_instance),
-    settings: Settings = Depends(get_settings),
-) -> dict[str, str | int]:
-    return await _run_extraction(request, "extract_text", service, settings)
+async def extract_text(request: Request, service: Service) -> ExtractionResult:
+    return await _run_extraction(request, service, markdown=False)
