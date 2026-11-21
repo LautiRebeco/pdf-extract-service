@@ -79,7 +79,7 @@ def test_get_settings_uses_default_for_invalid_extraction_limits(monkeypatch) ->
 def test_get_settings_uses_conservative_pending_limit_by_default(monkeypatch) -> None:
     monkeypatch.delenv("APP_MAX_PENDING_EXTRACTIONS", raising=False)
 
-    assert get_settings().max_pending_extractions == 16
+    assert get_settings().max_pending_extractions == 100
 
 
 def test_get_settings_uses_info_log_level_by_default(monkeypatch) -> None:
