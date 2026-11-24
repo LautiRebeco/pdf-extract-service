@@ -1,6 +1,6 @@
 # PDF Extract Service
 
-API que recibe un PDF y devuelve su texto en formato plano o Markdown. Usa PyMuPDF para leer el documento y puede usar Tesseract para extraer texto de las imágenes.
+Este servicio recibe un PDF y devuelve su texto en formato plano o Markdown. Usa PyMuPDF para leer el documento y, si activás el OCR, Tesseract para leer texto de las imágenes. El extractor devuelve el resultado en la misma respuesta y funciona sin base de datos propia.
 
 ## Repositorios del proyecto
 
@@ -47,23 +47,35 @@ curl -fsS -F 'file=@documento.pdf' http://localhost:8000/extract
 
 La conversión a Markdown no reconstruye tablas ni diseños complejos. Si falla el OCR de alguna imagen, la API devuelve el texto que pudo recuperar. Si hubo un fallo de OCR y no se recuperó texto, devuelve HTTP 500.
 
-## Límites de procesamiento
+## Límites y configuración
 
-Por defecto, cada proceso de la API admite hasta 100 solicitudes entre cargas, esperas y extracciones activas, y ejecuta una extracción a la vez. Al alcanzar el límite devuelve HTTP 503. La recepción del PDF tiene un plazo de 30 segundos (HTTP 408) y la extracción tiene otros 30 segundos, incluida la espera por un worker (HTTP 504). Si una extracción ya empezó cuando vence el plazo, ocupa su cupo hasta terminar.
+| Variable | Por defecto | Qué controla |
+| --- | --- | --- |
+| `APP_MAX_PDF_SIZE_BYTES` | 10 MiB | Tamaño máximo del PDF (HTTP 413 al superarlo). |
+| `APP_MAX_PENDING_EXTRACTIONS` | 100 | Solicitudes por proceso, incluidas las que están subiendo el PDF, esperando o en extracción (HTTP 503 al llenarse). |
+| `APP_EXTRACT_WORKERS` | 1 | Extracciones que pueden ejecutarse en paralelo por proceso. |
+| `APP_UPLOAD_TIMEOUT_SECONDS` | 30 s | Tiempo para recibir el PDF (HTTP 408). |
+| `APP_EXTRACTION_TIMEOUT_SECONDS` | 30 s | Tiempo de extracción, incluida la espera por un worker (HTTP 504). |
+
+Si vence el plazo mientras una extracción está en curso, esa solicitud sigue ocupando un cupo hasta que termina el trabajo.
+
+## Pruebas
+
+```sh
+uv run --locked python -m pytest
+```
 
 ## Despliegue con el orquestador
 
-Cuando pasan las pruebas y la verificación del contenedor, CI publica la imagen en GHCR tras un push a `master`, con las etiquetas `latest` y el SHA completo del commit. La verificación guarda el informe de Trivy como artefacto y bloquea la publicación si encuentra vulnerabilidades de severidad alta o crítica con una corrección disponible.
-
-En el escaneo local del 20 de noviembre de 2026, Trivy registró 134 hallazgos de severidad alta o crítica en paquetes Debian. El informe no indicaba una versión corregida para esos hallazgos.
-
-El Compose del orquestador usa `ghcr.io/lighuen04/pdf-extract-service:latest` por defecto. Para actualizar solo el extractor, ejecutá desde el directorio del orquestador:
+Para actualizar el extractor, ejecutá estos comandos desde el directorio del orquestador.
 
 ```sh
 docker compose pull extract
 docker compose up -d extract
 ```
 
-Para fijar una versión, indicá la imagen con el SHA del commit en `EXTRACT_IMAGE` en el `.env` del orquestador. Si el paquete es privado, iniciá sesión con `docker login ghcr.io` usando un token clásico con permiso `read:packages` y acceso al paquete.
+Si la imagen es privada, iniciá sesión primero con `docker login ghcr.io` usando un token clásico con permiso `read:packages` y acceso al paquete.
+
+## Licencia
 
 El servicio deriva de [`services/extract` de pdf-extractext](https://github.com/Gianluca-gitea/pdf-extractext/tree/0123464/services/extract) y se distribuye bajo la licencia [AGPL-3.0-only](LICENSE).
